@@ -141,3 +141,9 @@ Since I first released this library, there's been quite a few people who have su
 * Paul Campbell
 * Matthew Beale
 * Tom Simnett
+* Erik Ostrom
+* Ole Riesenberg
+* Josh Kalderimis
+* J.D. Hollis
+* Jeffrey Chupp
+* Rob Anderton

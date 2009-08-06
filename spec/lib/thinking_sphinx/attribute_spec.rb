@@ -4,6 +4,8 @@ describe ThinkingSphinx::Attribute do
   before :each do
     @index  = ThinkingSphinx::Index.new(Person)
     @source = ThinkingSphinx::Source.new(@index)
+    
+    @index.delta_object = ThinkingSphinx::Deltas::DefaultDelta.new @index, @index.local_options
   end
   
   describe '#initialize' do
@@ -83,6 +85,19 @@ describe ThinkingSphinx::Attribute do
       column = @attribute.columns.first
       @attribute.associations[column] = [@first_assoc, @second_assoc]
       @attribute.send(:column_with_prefix, column).should == "`tabular`.`col_name`, `data`.`col_name`"
+    end
+  end
+  
+  describe '#to_select_sql' do
+    it "should convert a mixture of dates and datetimes to timestamps" do
+      attribute = ThinkingSphinx::Attribute.new(@source,
+        [ ThinkingSphinx::Index::FauxColumn.new(:created_at),
+          ThinkingSphinx::Index::FauxColumn.new(:created_on) ],
+        :as => :times
+      )
+      attribute.model = Friendship
+      
+      attribute.to_select_sql.should == "CONCAT_WS(',', UNIX_TIMESTAMP(`friendships`.`created_at`), UNIX_TIMESTAMP(`friendships`.`created_on`)) AS `times`"
     end
   end
   
@@ -189,7 +204,7 @@ describe ThinkingSphinx::Attribute do
       attribute.model = Person
       attribute.columns.each { |col| attribute.associations[col] = [] }
       
-      attribute.send(:all_ints?).should be_true
+      attribute.should be_all_ints
     end
     
     it "should return false if only some columns are integers" do
@@ -200,7 +215,7 @@ describe ThinkingSphinx::Attribute do
       attribute.model = Person
       attribute.columns.each { |col| attribute.associations[col] = [] }
       
-      attribute.send(:all_ints?).should be_false
+      attribute.should_not be_all_ints
     end
     
     it "should return false if no columns are integers" do
@@ -211,7 +226,42 @@ describe ThinkingSphinx::Attribute do
       attribute.model = Person
       attribute.columns.each { |col| attribute.associations[col] = [] }
       
-      attribute.send(:all_ints?).should be_false
+      attribute.should_not be_all_ints
+    end
+  end
+  
+  describe "all_datetimes? method" do
+    it "should return true if all columns are datetimes" do
+      attribute = ThinkingSphinx::Attribute.new(@source,
+        [ ThinkingSphinx::Index::FauxColumn.new(:created_at),
+          ThinkingSphinx::Index::FauxColumn.new(:updated_at) ]
+      )
+      attribute.model = Friendship
+      attribute.columns.each { |col| attribute.associations[col] = [] }
+      
+      attribute.should be_all_datetimes
+    end
+    
+    it "should return false if only some columns are datetimes" do
+      attribute = ThinkingSphinx::Attribute.new(@source,
+        [ ThinkingSphinx::Index::FauxColumn.new(:id),
+          ThinkingSphinx::Index::FauxColumn.new(:created_at) ]
+      )
+      attribute.model = Friendship
+      attribute.columns.each { |col| attribute.associations[col] = [] }
+      
+      attribute.should_not be_all_datetimes
+    end
+    
+    it "should return true if all columns can be " do
+      attribute = ThinkingSphinx::Attribute.new(@source,
+        [ ThinkingSphinx::Index::FauxColumn.new(:created_at),
+          ThinkingSphinx::Index::FauxColumn.new(:created_on) ]
+      )
+      attribute.model = Friendship
+      attribute.columns.each { |col| attribute.associations[col] = [] }
+      
+      attribute.should be_all_datetimes
     end
   end
   
@@ -229,6 +279,23 @@ describe ThinkingSphinx::Attribute do
       declaration, query = @attribute.config_value.split('; ')
       declaration.should == "uint tag_ids from query"
       query.should       == "SELECT `tags`.`person_id` #{ThinkingSphinx.unique_id_expression} AS `id`, `tags`.`id` AS `tag_ids` FROM `tags`"
+    end
+  end
+  
+  describe "MVA with source query for a delta source" do
+    before :each do
+      @attribute = ThinkingSphinx::Attribute.new(@source,
+        [ThinkingSphinx::Index::FauxColumn.new(:tags, :id)],
+        :as => :tag_ids, :source => :query
+      )
+    end
+    
+    it "should use a query" do
+      @attribute.type_to_config.should == :sql_attr_multi
+      
+      declaration, query = @attribute.config_value(nil, true).split('; ')
+      declaration.should == "uint tag_ids from query"
+      query.should       == "SELECT `tags`.`person_id` #{ThinkingSphinx.unique_id_expression} AS `id`, `tags`.`id` AS `tag_ids` FROM `tags` WHERE `tags`.`person_id` IN (SELECT `id` FROM `people` WHERE `people`.`delta` = 1)"
     end
   end
   
@@ -263,6 +330,24 @@ describe ThinkingSphinx::Attribute do
       declaration, query, range_query = @attribute.config_value.split('; ')
       declaration.should == "uint tag_ids from ranged-query"
       query.should       == "SELECT `tags`.`person_id` #{ThinkingSphinx.unique_id_expression} AS `id`, `tags`.`id` AS `tag_ids` FROM `tags` WHERE `tags`.`person_id` >= $start AND `tags`.`person_id` <= $end"
+      range_query.should == "SELECT MIN(`tags`.`person_id`), MAX(`tags`.`person_id`) FROM `tags`"
+    end
+  end
+  
+  describe "MVA with ranged source query for a delta source" do
+    before :each do
+      @attribute = ThinkingSphinx::Attribute.new(@source,
+        [ThinkingSphinx::Index::FauxColumn.new(:tags, :id)],
+        :as => :tag_ids, :source => :ranged_query
+      )
+    end
+    
+    it "should use a ranged query" do
+      @attribute.type_to_config.should == :sql_attr_multi
+      
+      declaration, query, range_query = @attribute.config_value(nil, true).split('; ')
+      declaration.should == "uint tag_ids from ranged-query"
+      query.should       == "SELECT `tags`.`person_id` #{ThinkingSphinx.unique_id_expression} AS `id`, `tags`.`id` AS `tag_ids` FROM `tags` WHERE `tags`.`person_id` >= $start AND `tags`.`person_id` <= $end AND `tags`.`person_id` IN (SELECT `id` FROM `people` WHERE `people`.`delta` = 1)"
       range_query.should == "SELECT MIN(`tags`.`person_id`), MAX(`tags`.`person_id`) FROM `tags`"
     end
   end
@@ -318,6 +403,48 @@ describe ThinkingSphinx::Attribute do
       declaration.should == "uint link_ids from ranged-query"
       query.should       == "SELECT `links_people`.`person_id` #{ThinkingSphinx.unique_id_expression} AS `id`, `links_people`.`link_id` AS `link_ids` FROM `links_people` WHERE `links_people`.`person_id` >= $start AND `links_people`.`person_id` <= $end"
       range_query.should == "SELECT MIN(`links_people`.`person_id`), MAX(`links_people`.`person_id`) FROM `links_people`"
+    end
+  end
+  
+  describe "MVA via two has-many associations with a ranged source query" do
+    before :each do
+      @index  = ThinkingSphinx::Index.new(Alpha)
+      @source = ThinkingSphinx::Source.new(@index)
+      @attribute = ThinkingSphinx::Attribute.new(@source,
+        [ThinkingSphinx::Index::FauxColumn.new(:betas, :gammas, :value)],
+        :as => :gamma_values, :source => :ranged_query
+      )
+    end
+    
+    it "should use a ranged query" do
+      @attribute.type_to_config.should == :sql_attr_multi
+      
+      declaration, query, range_query = @attribute.config_value.split('; ')
+      declaration.should == "uint gamma_values from ranged-query"
+      query.should       == "SELECT `betas`.`alpha_id` #{ThinkingSphinx.unique_id_expression} AS `id`, `gammas`.`value` AS `gamma_values` FROM `betas` LEFT OUTER JOIN `gammas` ON gammas.beta_id = betas.id WHERE `betas`.`alpha_id` >= $start AND `betas`.`alpha_id` <= $end"
+      range_query.should == "SELECT MIN(`betas`.`alpha_id`), MAX(`betas`.`alpha_id`) FROM `betas`"
+    end
+  end
+  
+  describe "MVA via two has-many associations with a ranged source query for a delta source" do
+    before :each do
+      @index  = ThinkingSphinx::Index.new(Alpha)
+      @source = ThinkingSphinx::Source.new(@index)
+      @attribute = ThinkingSphinx::Attribute.new(@source,
+        [ThinkingSphinx::Index::FauxColumn.new(:betas, :gammas, :value)],
+        :as => :gamma_values, :source => :ranged_query
+      )
+      
+      @index.delta_object = ThinkingSphinx::Deltas::DefaultDelta.new @index, @index.local_options
+    end
+    
+    it "should use a ranged query" do
+      @attribute.type_to_config.should == :sql_attr_multi
+      
+      declaration, query, range_query = @attribute.config_value(nil, true).split('; ')
+      declaration.should == "uint gamma_values from ranged-query"
+      query.should       == "SELECT `betas`.`alpha_id` #{ThinkingSphinx.unique_id_expression} AS `id`, `gammas`.`value` AS `gamma_values` FROM `betas` LEFT OUTER JOIN `gammas` ON gammas.beta_id = betas.id WHERE `betas`.`alpha_id` >= $start AND `betas`.`alpha_id` <= $end AND `betas`.`alpha_id` IN (SELECT `id` FROM `alphas` WHERE `alphas`.`delta` = 1)"
+      range_query.should == "SELECT MIN(`betas`.`alpha_id`), MAX(`betas`.`alpha_id`) FROM `betas`"
     end
   end
   
